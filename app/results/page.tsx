@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { runAudit, AuditReport, ToolInput } from "@/lib/audit-engine";
 import { Button } from "@/components/Button";
+import { EmailCaptureModal } from "@/components/EmailCaptureModal";
 
 const LOCAL_STORAGE_KEY = "ai_audit_form_state";
 
@@ -16,6 +17,11 @@ export default function ResultsPage() {
   const [emailSubmitted, setEmailSubmitted] = useState(false);
   const [consultationBooked, setConsultationBooked] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
+
+  // Email capture states
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [publicId, setPublicId] = useState<string | null>(null);
+  const [savedEmail, setSavedEmail] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -40,13 +46,48 @@ export default function ResultsPage() {
     setIsLoaded(true);
   }, []);
 
+  // Trigger the modal to appear after audit results are shown (and never before)
+  useEffect(() => {
+    if (isLoaded && report && rawTools.length > 0) {
+      const alreadyCaptured = localStorage.getItem("ai_audit_email_captured") === "true";
+      if (!alreadyCaptured) {
+        const timer = setTimeout(() => {
+          setIsModalOpen(true);
+        }, 500);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [isLoaded, report, rawTools]);
+
   const handleShareReport = () => {
+    if (publicId) {
+      try {
+        const shareUrl = `${window.location.origin}/audit/${publicId}`;
+        navigator.clipboard.writeText(shareUrl);
+        setCopySuccess(true);
+        setTimeout(() => setCopySuccess(false), 2000);
+      } catch (e) {
+        console.error("Failed to copy URL:", e);
+      }
+    } else {
+      setIsModalOpen(true);
+    }
+  };
+
+  const handleModalSubmitSuccess = (id: string, emailAddr: string) => {
+    setPublicId(id);
+    setSavedEmail(emailAddr);
+    setIsModalOpen(false);
+    localStorage.setItem("ai_audit_email_captured", "true");
+    
+    // Proactively copy the share link and trigger visual copied indicator
     try {
-      navigator.clipboard.writeText(window.location.href);
+      const shareUrl = `${window.location.origin}/audit/${id}`;
+      navigator.clipboard.writeText(shareUrl);
       setCopySuccess(true);
-      setTimeout(() => setCopySuccess(false), 2000);
-    } catch (e) {
-      console.error("Failed to copy URL:", e);
+      setTimeout(() => setCopySuccess(false), 3000);
+    } catch (err) {
+      console.error("Failed to copy link:", err);
     }
   };
 
@@ -311,6 +352,20 @@ export default function ResultsPage() {
       <footer className="border-t border-zinc-100 py-6 text-center text-xs font-mono text-zinc-400 bg-white">
         &copy; 2026 AI.AUDIT Inc. Immutable data verification system.
       </footer>
+
+      {/* Email Capture Modal */}
+      <EmailCaptureModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onSubmitSuccess={handleModalSubmitSuccess}
+        auditData={{
+          tools: rawTools,
+          useCase,
+          teamSize,
+          report,
+        }}
+        totalSavings={report.totalMonthlySavings}
+      />
     </div>
   );
 }

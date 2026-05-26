@@ -1,8 +1,9 @@
-"use client";
-
-import React, { useState, useEffect } from "react";
-import { runAudit, AuditReport, ToolInput } from "@/lib/audit-engine";
+import type { Metadata } from "next";
+import React from "react";
+import { runAudit } from "@/lib/audit-engine";
 import { Button } from "@/components/Button";
+import { CopyLinkButton } from "@/components/CopyLinkButton";
+import { supabase } from "@/lib/supabase";
 
 interface PageProps {
   params: {
@@ -10,8 +11,8 @@ interface PageProps {
   };
 }
 
-// Enterprise Demo Stack containing cases for all five financial rules
-const DEMO_TOOLS: ToolInput[] = [
+// Enterprise Demo Stack containing cases for all five financial rules (for demo/fallback use)
+const DEMO_TOOLS = [
   { id: "demo-1", name: "Cursor", plan: "Business", monthlySpend: 120, seats: 3 },
   { id: "demo-2", name: "GitHub Copilot", plan: "Individual", monthlySpend: 30, seats: 3 },
   { id: "demo-3", name: "Claude", plan: "Team", monthlySpend: 150, seats: 3 },
@@ -19,91 +20,218 @@ const DEMO_TOOLS: ToolInput[] = [
   { id: "demo-5", name: "OpenAI API Direct", plan: "Pay-as-you-go", monthlySpend: 350, seats: 1 },
 ];
 
-export default function SharedAuditPage({ params }: PageProps) {
+// Async Metadata Generation for Open Graph & Twitter Card SEO
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { id } = params;
-  const [report, setReport] = useState<AuditReport | null>(null);
-  const [tools, setTools] = useState<ToolInput[]>([]);
-  const [useCase, setUseCase] = useState<string>("coding");
-  const [teamSize, setTeamSize] = useState<number>(10);
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [isDemo, setIsDemo] = useState(false);
-  const [copySuccess, setCopySuccess] = useState(false);
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("ai_audit_form_state");
-      // If we are looking at the demo-share-id or if no local state is present, default to the demo stack
-      if (id === "demo-share-id" || !saved) {
-        setTools(DEMO_TOOLS);
-        setUseCase("coding");
-        setTeamSize(10);
-        setReport(runAudit(DEMO_TOOLS, "coding"));
-        setIsDemo(true);
-      } else if (saved) {
-        const parsed = JSON.parse(saved);
-        const savedTools = Array.isArray(parsed.tools) ? parsed.tools : [];
-        const uc = parsed.useCase || "coding";
-        const ts = parsed.teamSize || 1;
-
-        setTools(savedTools);
-        setUseCase(uc);
-        setTeamSize(ts);
-        setReport(runAudit(savedTools, uc));
-      }
-    } catch (e) {
-      console.error("Failed to compile shared report:", e);
+  try {
+    // Demo-mode default fallback
+    if (id === "demo-share-id") {
+      const demoReport = runAudit(DEMO_TOOLS, "coding");
+      const title = `AI Spend Audit — $${demoReport.totalMonthlySavings}/month in savings found`;
+      const description = `We analyzed active subscriptions for Cursor, GitHub Copilot, Claude, ChatGPT, and OpenAI API and identified immediately actionable monthly savings.`;
+      
+      return {
+        title,
+        description,
+        openGraph: {
+          title,
+          description,
+          type: "website",
+          images: [
+            {
+              url: "https://placeholder-url.supabase.co/placeholder-og.png",
+              width: 1200,
+              height: 630,
+              alt: `AI Spend Audit report finding $${demoReport.totalMonthlySavings}/month in savings`,
+            },
+          ],
+        },
+        twitter: {
+          card: "summary_large_image",
+          title,
+          description,
+          images: ["https://placeholder-url.supabase.co/placeholder-og.png"],
+        },
+      };
     }
-    setIsLoaded(true);
-  }, [id]);
 
-  const handleCopyLink = () => {
+    // Safe DB fetch for SEO tags
+    const { data } = await supabase
+      .from("audits")
+      .select("total_savings, audit_data")
+      .eq("public_id", id)
+      .single();
+
+    const savings = data?.total_savings ?? 0;
+    const tools = data?.audit_data?.tools || [];
+    const toolNames = tools.map((t: any) => t.name || t.toolName).join(", ");
+
+    const title = `AI Spend Audit — $${savings}/month in savings found`;
+    const description = toolNames
+      ? `We analyzed active subscriptions for ${toolNames} and identified immediately actionable monthly savings.`
+      : `Discover license wastage and consolidate subscriptions with our automated AI Spend Audits.`;
+
+    return {
+      title,
+      description,
+      openGraph: {
+        title,
+        description,
+        type: "website",
+        images: [
+          {
+            url: "https://placeholder-url.supabase.co/placeholder-og.png",
+            width: 1200,
+            height: 630,
+            alt: `AI Spend Audit report finding $${savings}/month in savings`,
+          },
+        ],
+      },
+      twitter: {
+        card: "summary_large_image",
+        title,
+        description,
+        images: ["https://placeholder-url.supabase.co/placeholder-og.png"],
+      },
+    };
+  } catch (err) {
+    const title = "AI Spend Audit Report";
+    const description = "Discover license wastage and consolidate subscriptions with our automated AI Spend Audits.";
+    return {
+      title,
+      description,
+    };
+  }
+}
+
+export default async function SharedAuditPage({ params }: PageProps) {
+  const { id } = params;
+  let tools: any[] = [];
+  let useCase = "coding";
+  let teamSize = 1;
+  let isDemo = false;
+  let data = null;
+  let error = null;
+
+  if (id === "demo-share-id") {
+    tools = DEMO_TOOLS;
+    useCase = "coding";
+    teamSize = 10;
+    isDemo = true;
+  } else {
     try {
-      navigator.clipboard.writeText(window.location.href);
-      setCopySuccess(true);
-      setTimeout(() => setCopySuccess(false), 2000);
+      // Retrieve row from Supabase - DO NOT SELECT EMAIL OR COMPANY TO SECURE DATA PRIVACY
+      const res = await supabase
+        .from("audits")
+        .select("total_savings, audit_data")
+        .eq("public_id", id)
+        .single();
+      data = res.data;
+      error = res.error;
     } catch (e) {
-      console.error("Failed to copy URL:", e);
+      error = e;
     }
-  };
+  }
 
-  if (!isLoaded || !report) {
+  if (id !== "demo-share-id" && (!data || error)) {
+    // If not found, show a beautiful professional 404 page
     return (
-      <div className="min-h-screen bg-white text-zinc-900 flex items-center justify-center font-sans">
-        <div className="text-sm font-mono tracking-tight text-zinc-400 animate-pulse">
-          Retrieving shared audit...
-        </div>
+      <div className="min-h-screen bg-white text-zinc-900 font-sans flex flex-col justify-between">
+        <header className="border-b border-zinc-100 py-4 px-6 md:px-12 bg-white">
+          <div className="flex justify-between items-center max-w-2xl mx-auto w-full">
+            <a href="/" className="font-mono font-bold tracking-tight text-base hover:opacity-80">
+              AI.AUDIT
+            </a>
+          </div>
+        </header>
+
+        <main className="max-w-md w-full mx-auto px-6 py-16 text-center space-y-6">
+          <div className="text-xs uppercase font-mono tracking-wider font-semibold text-zinc-400">
+            Audit Not Found
+          </div>
+          <h1 className="text-xl font-bold tracking-tight text-zinc-900">
+            This audit report does not exist or has expired.
+          </h1>
+          <p className="text-sm text-zinc-500 leading-relaxed">
+            Please run a fresh scan of your team size, use case, and current active AI tool subscriptions to generate a verified share link.
+          </p>
+          <a href="/" className="inline-block w-full">
+            <Button variant="primary" className="w-full py-3 font-semibold">
+              Create New Audit
+            </Button>
+          </a>
+        </main>
+
+        <footer className="border-t border-zinc-100 py-6 text-center text-xs font-mono text-zinc-400 bg-white">
+          &copy; 2026 AI.AUDIT Inc. Immutable data verification system.
+        </footer>
       </div>
     );
+  } else if (id !== "demo-share-id" && data) {
+    const { audit_data } = data;
+    tools = audit_data?.tools || [];
+    useCase = audit_data?.useCase || "coding";
+    teamSize = audit_data?.teamSize || 1;
   }
+
+  // Re-run dynamic financial audit rules
+  const report = runAudit(tools, useCase);
+
+  // Map stack configuration
+  const toolCards = tools.map((tool: any) => {
+    const auditItem = report.items.find((item) => item.toolId === tool.id);
+    if (auditItem) {
+      return {
+        id: tool.id,
+        name: tool.name,
+        plan: tool.plan,
+        monthlySpend: tool.monthlySpend || 0,
+        recommendedAction: auditItem.recommendedAction,
+        savings: auditItem.savings,
+        reason: auditItem.reason,
+      };
+    } else {
+      return {
+        id: tool.id,
+        name: tool.name,
+        plan: tool.plan,
+        monthlySpend: tool.monthlySpend || 0,
+        recommendedAction: "Already optimised",
+        savings: 0,
+        reason: "This tool subscription is operating at optimized vendor limits with zero excess redundancy.",
+      };
+    }
+  });
 
   return (
     <div className="min-h-screen bg-white text-zinc-900 font-sans antialiased flex flex-col justify-between">
       {/* Header */}
       <header className="border-b border-zinc-100 py-4 px-6 md:px-12 flex justify-between items-center bg-white">
-        <div className="flex items-center gap-3">
-          <a href="/" className="font-mono font-bold tracking-tight text-base hover:opacity-80">
-            AI.AUDIT
+        <div className="flex justify-between items-center max-w-2xl mx-auto w-full">
+          <div className="flex items-center gap-3">
+            <a href="/" className="font-mono font-bold tracking-tight text-base hover:opacity-80">
+              AI.AUDIT
+            </a>
+            <span className="text-[10px] uppercase font-mono tracking-widest px-2 py-0.5 border border-zinc-200 text-zinc-400 rounded">
+              Public View
+            </span>
+          </div>
+          <a href="/" className="text-xs font-mono text-zinc-600 hover:text-zinc-950 font-medium">
+            Create My Audit
           </a>
-          <span className="text-[10px] uppercase font-mono tracking-widest px-2 py-0.5 border border-zinc-200 text-zinc-400 rounded">
-            Public View
-          </span>
         </div>
-        <a href="/" className="text-xs font-mono text-zinc-600 hover:text-zinc-950 font-medium">
-          Create My Audit
-        </a>
       </header>
 
       {/* Main Container */}
-      <main className="max-w-3xl w-full mx-auto px-6 py-12 flex-grow space-y-8 animate-fadeIn">
+      <main className="max-w-2xl w-full mx-auto px-6 py-12 flex-grow space-y-8 animate-fadeIn">
         {/* Share Banner */}
         <div className="p-4 border border-zinc-200 bg-zinc-50 rounded-md flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 text-xs">
           <div className="font-mono text-zinc-500">
             SHARED REPORT ID: <strong className="text-zinc-800">{id}</strong>
             {isDemo && <span className="ml-2 text-indigo-600 font-bold">(Enterprise Demo Stack)</span>}
           </div>
-          <Button onClick={handleCopyLink} variant="secondary" className="py-1 px-3 text-xs">
-            {copySuccess ? "Copied!" : "Copy Report Link"}
-          </Button>
+          <CopyLinkButton />
         </div>
 
         {/* Verdict and Overview */}
@@ -163,7 +291,7 @@ export default function SharedAuditPage({ params }: PageProps) {
             <h3 className="text-lg font-bold tracking-tight text-white">
               Enterprise Consolidation Pre-Approval
             </h3>
-            <p className="text-xs text-zinc-300 leading-relaxed">
+            <p className="text-xs text-zinc-300 leading-relaxed leading-normal">
               Your organization's optimization margin exceeds **$500/month** in direct licensing wastage. You qualify for high-priority contract grouping, letting you consolidate your billing into a single negotiated corporate account.
             </p>
             <div className="pt-1">
@@ -181,7 +309,7 @@ export default function SharedAuditPage({ params }: PageProps) {
           </h2>
 
           <div className="space-y-4">
-            {report.items.map((item, idx) => (
+            {toolCards.map((item: any, idx: number) => (
               <div
                 key={idx}
                 className="p-6 border border-zinc-200 rounded-md bg-white space-y-4"
@@ -198,7 +326,7 @@ export default function SharedAuditPage({ params }: PageProps) {
                   <div className="text-right font-mono">
                     <div className="text-xs text-zinc-400">Savings</div>
                     <div className="text-sm font-bold text-emerald-600">
-                      -${item.savings}/mo
+                      {item.savings > 0 ? `-$${item.savings}/mo` : "$0/mo"}
                     </div>
                   </div>
                 </div>
@@ -208,7 +336,6 @@ export default function SharedAuditPage({ params }: PageProps) {
                 </div>
 
                 <div className="text-[10px] font-mono text-zinc-400 flex gap-4 pt-1">
-                  <span>Active Seats: {item.seats}</span>
                   <span>Current Spend: ${item.monthlySpend}/mo</span>
                 </div>
               </div>
@@ -219,7 +346,7 @@ export default function SharedAuditPage({ params }: PageProps) {
         {/* Action Panel */}
         <div className="pt-6 border-t border-zinc-100 text-center">
           <a href="/">
-            <Button variant="primary" className="px-8 font-semibold">
+            <Button variant="primary" className="px-8 font-semibold py-3 shadow-md hover:shadow-lg">
               Analyze My Custom Stack
             </Button>
           </a>
